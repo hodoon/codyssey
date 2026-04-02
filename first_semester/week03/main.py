@@ -1,137 +1,90 @@
-import csv
-import pickle
+print('Hello Mars')
 
 
-def parse_number(value):
-    """문자열을 float로 변환한다. 변환 불가 시 None을 반환한다."""
+def read_log(file_path):
+    '''로그 파일을 읽어 헤더와 데이터 행 목록을 반환한다.'''
     try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
-
-
-def compute_danger_score(flammability, specific_gravity):
-    """인화성과 비중을 곱해 복합 위험도 점수를 계산한다.
-    비중이 없을 경우(Various) 중립값 1.0을 사용한다.
-    """
-    sg = specific_gravity if specific_gravity is not None else 1.0
-    return round(flammability * sg, 4)
-
-
-def read_csv(filename):
-    """CSV 파일을 읽어 헤더와 데이터 리스트로 반환한다.
-    각 행은 [Substance, Weight, Specific Gravity, Strength,
-              Flammability, Danger Score] 형태이다.
-    """
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            header = next(reader) + ['Danger Score']
-            data = []
-            for row in reader:
-                if not row:
-                    continue
-                try:
-                    row[4] = float(row[4])
-                except (ValueError, IndexError):
-                    continue
-                sg = parse_number(row[2])
-                row.append(compute_danger_score(row[4], sg))
-                data.append(row)
-        return header, data
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
     except FileNotFoundError:
-        print(f'오류: 파일을 찾을 수 없습니다 - {filename}')
+        print(f'오류: 파일을 찾을 수 없습니다 - {file_path}')
+        return None, []
     except PermissionError:
-        print(f'오류: 파일 접근 권한이 없습니다 - {filename}')
-    return None, None
+        print(f'오류: 파일 읽기 권한이 없습니다 - {file_path}')
+        return None, []
+    except OSError as e:
+        print(f'오류: 파일을 읽는 중 문제가 발생했습니다 - {e}')
+        return None, []
+
+    if not lines:
+        print('오류: 파일이 비어 있습니다.')
+        return None, []
+
+    header = lines[0].rstrip('\n')
+    data_lines = [line.rstrip('\n') for line in lines[1:] if line.strip()]
+    return header, data_lines
 
 
-def print_csv(header, data):
-    """CSV 데이터를 화면에 출력한다."""
-    print(','.join(header))
-    for row in data:
-        print(','.join(str(v) for v in row))
-
-
-def sort_by_danger_score(data):
-    """복합 위험도 점수(Danger Score) 기준 내림차순으로 정렬한 새 리스트를 반환한다."""
-    return sorted(data, key=lambda x: x[5], reverse=True)
-
-
-def filter_danger(data, threshold=0.7):
-    """인화성 지수가 threshold 이상인 항목만 필터링해 반환한다."""
-    return [row for row in data if row[4] >= threshold]
-
-
-def save_csv(filename, header, data):
-    """데이터를 CSV 파일로 저장한다."""
-    try:
-        with open(filename, 'w', encoding='utf-8', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            writer.writerows(data)
-        print(f'저장 완료: {filename}')
-    except PermissionError:
-        print(f'오류: 파일 저장 권한이 없습니다 - {filename}')
-
-
-def save_bin(filename, data):
-    """데이터를 이진 파일(pickle)로 저장한다."""
-    try:
-        with open(filename, 'wb') as f:
-            pickle.dump(data, f)
-        print(f'이진 파일 저장 완료: {filename}')
-    except PermissionError:
-        print(f'오류: 파일 저장 권한이 없습니다 - {filename}')
-
-
-def load_bin(filename):
-    """이진 파일(pickle)을 읽어 데이터를 반환한다."""
-    try:
-        with open(filename, 'rb') as f:
-            return pickle.load(f)
-    except FileNotFoundError:
-        print(f'오류: 파일을 찾을 수 없습니다 - {filename}')
-    except PermissionError:
-        print(f'오류: 파일 접근 권한이 없습니다 - {filename}')
+def parse_log_line(line):
+    '''로그 한 줄을 파싱해 (timestamp, event, message) 튜플을 반환한다.'''
+    parts = line.split(',', 2)
+    if len(parts) == 3:
+        return parts[0].strip(), parts[1].strip(), parts[2].strip()
     return None
 
 
-def main():
-    csv_file = 'Mars_Base_Inventory_List.csv'
-    danger_file = 'Mars_Base_Inventory_danger.csv'
-    bin_file = 'Mars_Base_Inventory_List.bin'
+def is_error_line(message):
+    '''문제가 되는 로그 항목인지 판별한다.'''
+    keywords = ['unstable', 'explosion', 'error', 'fail', 'critical', 'warning']
+    return any(keyword in message.lower() for keyword in keywords)
 
-    # CSV 읽기 및 출력
-    header, data = read_csv(csv_file)
-    if data is None:
+
+def print_log(header, data_lines):
+    '''로그 전체 내용을 화면에 출력한다.'''
+    print(header)
+    for line in data_lines:
+        print(line)
+
+
+def print_log_reversed(header, data_lines):
+    '''로그 내용을 시간의 역순으로 정렬해 출력한다.'''
+    sorted_lines = sorted(data_lines, reverse=True)
+    print(header)
+    for line in sorted_lines:
+        print(line)
+
+
+def save_error_log(data_lines, output_path):
+    '''문제가 되는 로그 항목만 별도 파일로 저장한다.'''
+    error_lines = []
+    for line in data_lines:
+        parsed = parse_log_line(line)
+        if parsed and is_error_line(parsed[2]):
+            error_lines.append(line)
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for line in error_lines:
+                f.write(line + '\n')
+        print(f'\n문제 로그 {len(error_lines)}건이 {output_path}에 저장되었습니다.')
+    except PermissionError:
+        print(f'오류: 파일 쓰기 권한이 없습니다 - {output_path}')
+    except OSError as e:
+        print(f'오류: 파일 저장 중 문제가 발생했습니다 - {e}')
+
+
+def main():
+    log_path = 'mission_computer_main.log'
+    error_log_path = 'mission_computer_error.log'
+
+    header, data_lines = read_log(log_path)
+    if header is None:
         return
 
-    print('=== 전체 화물 목록 ===')
-    print_csv(header, data)
+    print('\n--- 로그 전체 출력 (시간 역순) ---')
+    print_log_reversed(header, data_lines)
 
-    # 복합 위험도 점수 기준 정렬
-    sorted_data = sort_by_danger_score(data)
-    print('\n=== 복합 위험도(인화성 × 비중) 높은 순 정렬 ===')
-    print_csv(header, sorted_data)
-
-    # 인화성 0.7 이상 필터링 및 출력
-    danger_data = filter_danger(sorted_data)
-    print('\n=== 인화성 0.7 이상 위험 물질 ===')
-    print_csv(header, danger_data)
-
-    # 위험 물질 CSV 저장
-    save_csv(danger_file, header, danger_data)
-
-    # 보너스: 이진 파일 저장
-    save_bin(bin_file, sorted_data)
-
-    # 보너스: 이진 파일 읽기 및 출력
-    bin_data = load_bin(bin_file)
-    if bin_data:
-        print('\n=== 이진 파일에서 읽은 데이터 ===')
-        print_csv(header, bin_data)
+    save_error_log(data_lines, error_log_path)
 
 
-if __name__ == '__main__':
-    main()
+main()
