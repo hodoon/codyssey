@@ -8,9 +8,22 @@ import zlib
 
 
 ZIP_FILE = 'emergency_storage_key.zip'
-PASSWORD_FILE = 'password.txt'
+PASSWORD_FILE = 'key.txt'
 CHARSET = string.ascii_lowercase + string.digits
 PASSWORD_LENGTH = 6
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+PRIORITY_WORDS = (
+    'mars',
+    'door',
+    'safe',
+    'lock',
+    'key',
+    'pass',
+    'code',
+    'hint',
+    'open',
+    'star',
+)
 
 
 def get_target_info(zf):
@@ -29,6 +42,89 @@ def save_password(password):
         print(f'파일 저장 중 오류가 발생했습니다: {error}')
 
 
+def extract_zip(zip_filepath, password):
+    try:
+        with zipfile.ZipFile(zip_filepath, 'r') as zf:
+            for member in zf.infolist():
+                member_path = os.path.abspath(os.path.join(OUTPUT_DIR, member.filename))
+                if os.path.commonpath([OUTPUT_DIR, member_path]) != OUTPUT_DIR:
+                    raise ValueError(f'안전하지 않은 경로가 포함되어 있습니다: {member.filename}')
+            zf.extractall(path=OUTPUT_DIR, pwd=password.encode('utf-8'))
+        print(f'압축 해제 결과가 {OUTPUT_DIR}에 저장되었습니다.')
+    except (FileNotFoundError, PermissionError, OSError, ValueError, RuntimeError, zipfile.BadZipFile, zlib.error) as error:
+        print(f'압축 해제 중 오류가 발생했습니다: {error}')
+
+
+def is_password_correct(zf, target_info, password):
+    try:
+        with zf.open(target_info, pwd=password.encode('utf-8')) as file:
+            while file.read(8192):
+                pass
+        return True
+    except (RuntimeError, zipfile.BadZipFile, zlib.error):
+        return False
+
+
+def generate_priority_candidates():
+    seen = set()
+
+    for word in PRIORITY_WORDS:
+        if len(word) == PASSWORD_LENGTH and word not in seen:
+            seen.add(word)
+            yield word
+
+    for word in PRIORITY_WORDS:
+        remain = PASSWORD_LENGTH - len(word)
+        if remain <= 0:
+            continue
+
+        for suffix in itertools.product(string.digits, repeat=remain):
+            candidate = word + ''.join(suffix)
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+        for prefix in itertools.product(string.digits, repeat=remain):
+            candidate = ''.join(prefix) + word
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+    for word in PRIORITY_WORDS:
+        remain = PASSWORD_LENGTH - len(word)
+        if remain != 1:
+            continue
+
+        for suffix in string.ascii_lowercase:
+            candidate = word + suffix
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+        for prefix in string.ascii_lowercase:
+            candidate = prefix + word
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+
+def try_priority_passwords(zip_filepath):
+    attempts = 0
+
+    try:
+        with zipfile.ZipFile(zip_filepath, 'r') as zf:
+            target_info = get_target_info(zf)
+
+            for candidate in generate_priority_candidates():
+                attempts += 1
+                if is_password_correct(zf, target_info, candidate):
+                    return candidate, attempts
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as error:
+        return f'error:{error}', attempts
+
+    return None, attempts
+
+
 def check_password_chunk(args):
     zip_filepath, first_char, stop_event = args
     attempts = 0
@@ -43,16 +139,9 @@ def check_password_chunk(args):
 
                 attempts += 1
                 guess = first_char + ''.join(guess_tuple)
-                pwd_bytes = guess.encode('utf-8')
-
-                try:
-                    with zf.open(target_info, pwd=pwd_bytes) as file:
-                        while file.read(8192):
-                            pass
+                if is_password_correct(zf, target_info, guess):
                     stop_event.set()
                     return guess, attempts
-                except (RuntimeError, zipfile.BadZipFile, zlib.error):
-                    pass
     except (FileNotFoundError, PermissionError, OSError, ValueError) as error:
         return f'error:{error}', attempts
 
@@ -80,24 +169,36 @@ def unlock_zip(zip_filepath=ZIP_FILE):
     cpu_cores = multiprocessing.cpu_count()
 
     print(f'활성화된 코어 수: {cpu_cores}개')
-    print('병렬 탐색을 시작합니다...')
+    print('우선 키워드 기반 탐색을 시작합니다...')
 
     total_attempts = 0
     found_password = None
 
-    with multiprocessing.Pool(processes=cpu_cores) as pool:
-        for result_guess, result_attempts in pool.imap_unordered(check_password_chunk, tasks):
-            total_attempts += result_attempts
+    priority_result, priority_attempts = try_priority_passwords(zip_filepath)
+    total_attempts += priority_attempts
 
-            if isinstance(result_guess, str) and result_guess.startswith('error:'):
-                print(result_guess[6:])
-                pool.terminate()
-                break
+    if isinstance(priority_result, str) and priority_result.startswith('error:'):
+        print(priority_result[6:])
+        return None
 
-            if result_guess:
-                found_password = result_guess
-                pool.terminate()
-                break
+    if priority_result:
+        found_password = priority_result
+    else:
+        print('키워드 우선 탐색 실패, 전체 병렬 탐색으로 전환합니다...')
+
+        with multiprocessing.Pool(processes=cpu_cores) as pool:
+            for result_guess, result_attempts in pool.imap_unordered(check_password_chunk, tasks):
+                total_attempts += result_attempts
+
+                if isinstance(result_guess, str) and result_guess.startswith('error:'):
+                    print(result_guess[6:])
+                    pool.terminate()
+                    break
+
+                if result_guess:
+                    found_password = result_guess
+                    pool.terminate()
+                    break
 
     elapsed = time.time() - start_time
 
@@ -107,6 +208,7 @@ def unlock_zip(zip_filepath=ZIP_FILE):
         print(f'총 반복 횟수: {total_attempts}회')
         print(f'진행 시간: {elapsed:.2f}초')
         save_password(found_password)
+        extract_zip(zip_filepath, found_password)
         return found_password
 
     print('모든 조합을 시도했지만 암호를 찾지 못했습니다.')
