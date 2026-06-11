@@ -1,0 +1,18 @@
+services:
+  mars-mysql:
+    image: mysql:8.0
+    container_name: mars-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: mars1234
+      MYSQL_DATABASE: mars_db
+      TZ: Asia/Seoul
+    ports:
+      - "3306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mars-mysql-data:/var/lib/mysql
+
+volumes:
+  mars-mysql-data:
